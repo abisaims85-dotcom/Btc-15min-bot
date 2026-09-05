@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#111827">
+<title>BTC 15m Predictor</title>
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#f9fafb;background:#0b1020}
+*{box-sizing:border-box} body{margin:0;background:linear-gradient(180deg,#111827,#0b1020);min-height:100vh}
+main{max-width:520px;margin:auto;padding:18px 16px 32px}
+h1{font-size:27px;margin:4px 0 3px}.sub{color:#9ca3af;font-size:14px;margin-bottom:18px}
+.card{background:#172033;border:1px solid #263248;border-radius:18px;padding:16px;margin:12px 0;box-shadow:0 8px 25px #0004}
+.row{display:flex;justify-content:space-between;gap:12px;align-items:center;margin:9px 0}
+.label{color:#9ca3af}.value{font-weight:700}
+.price{font-size:38px;font-weight:800;letter-spacing:-1px}
+.timer{font-size:31px;font-weight:800;text-align:center;margin:4px 0 14px}
+.signal{font-size:42px;font-weight:900;text-align:center;padding:15px;border-radius:15px;background:#0f172a}
+.up{color:#22c55e}.down{color:#ef4444}.wait{color:#facc15}
+.conf{text-align:center;color:#d1d5db;margin-top:8px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}.mini{background:#0f172a;padding:12px;border-radius:12px}
+.mini b{display:block;font-size:18px;margin-top:4px}
+.good{color:#22c55e}.bad{color:#ef4444}.neutral{color:#facc15}
+button{width:100%;border:0;border-radius:13px;padding:13px;font-size:16px;font-weight:800;background:#2563eb;color:white}
+button:active{opacity:.8}
+small{color:#9ca3af;line-height:1.4;display:block;margin-top:12px}
+#status{font-size:13px;color:#9ca3af;text-align:center}
+</style>
+</head>
+<body>
+<main>
+<h1>₿ BTC 15-Min Predictor</h1>
+<div class="sub">Señal experimental para velas de 15 minutos</div>
+
+<div class="card">
+  <div class="label">BTC/USDT</div>
+  <div id="price" class="price">Cargando…</div>
+  <div id="timer" class="timer">--:--</div>
+  <div id="signal" class="signal wait">🟡 ESPERAR</div>
+  <div id="confidence" class="conf">Calculando…</div>
+</div>
+
+<div class="card">
+  <div class="row"><span class="label">Precio estimado de cierre</span><span id="forecast" class="value">—</span></div>
+  <div class="row"><span class="label">Apertura de vela</span><span id="open" class="value">—</span></div>
+  <div class="row"><span class="label">Máximo / mínimo</span><span id="hl" class="value">—</span></div>
+  <div class="row"><span class="label">Vela</span><span id="candle" class="value">—</span></div>
+</div>
+
+<div class="card">
+  <div class="grid">
+    <div class="mini">EMA 9<b id="ema9">—</b></div>
+    <div class="mini">EMA 21<b id="ema21">—</b></div>
+    <div class="mini">RSI 14<b id="rsi">—</b></div>
+    <div class="mini">VWAP<b id="vwap">—</b></div>
+  </div>
+</div>
+
+<div class="card">
+  <div class="row"><span class="label">Última predicción</span><span id="lastPred">—</span></div>
+  <div class="row"><span class="label">Resultado real</span><span id="result">—</span></div>
+  <div class="row"><span class="label">Aciertos</span><span id="stats">0 / 0</span></div>
+  <button id="refresh">Actualizar ahora</button>
+  <small>La señal es una estimación matemática, no una garantía. No realiza apuestas ni órdenes automáticamente.</small>
+</div>
+<div id="status">Conectando con Binance…</div>
+</main>
+
+<script>
+const API="https://api.binance.com/api/v3/klines";
+const SYMBOL="BTCUSDT", INTERVAL="15m", LIMIT=120;
+let candles=[], lastCandleOpen=0, previousPrediction=null, wins=0, total=0;
+
+const $=id=>document.getElementById(id);
+const fmt=n=>n==null||!isFinite(n)?"—":Number(n).toLocaleString("en-US",{maximumFractionDigits:2});
+function ema(values,p){
+  if(values.length<p)return null;
+  let e=values.slice(0,p).reduce((a,b)=>a+b,0)/p, k=2/(p+1);
+  for(let i=p;i<values.length;i++)e=values[i]*k+e*(1-k);
+  return e;
+}
+function rsi(values,p=14){
+  if(values.length<p+1)return null;
+  let gains=0,loss=0;
+  for(let i=values.length-p;i<values.length;i++){
+    let d=values[i]-values[i-1]; if(d>=0)gains+=d; else loss-=d;
+  }
+  let rs=loss===0?100:gains/loss;
+  return 100-(100/(1+rs));
+}
+function calcVWAP(cs){
+  let pv=0,v=0;
+  cs.forEach(c=>{let tp=(+c[2]+ +c[3]+ +c[4])/3; pv+=tp*+c[5];v+=+c[5]});
+  return v?pv/v:null;
+}
+function signal(){
+  if(candles.length<30)return;
+  const closes=candles.map(c=>+c[4]), price=closes.at(-1);
+  const e9=ema(closes,9),e21=ema(closes,21),R=rsi(closes),V=calcVWAP(candles);
+  $("ema9").textContent=fmt(e9);$("ema21").textContent=fmt(e21);
+  $("rsi").textContent=R?R.toFixed(1):"—";$("vwap").textContent=fmt(V);
+  let score=0;
+  if(e9>e21)score++; else if(e9<e21)score--;
+  if(price>V)score++; else if(price<V)score--;
+  if(R>50)score++; else if(R<50)score--;
+  let dir=score>=2?"UP":score<=-2?"DOWN":"WAIT";
+  // Estimate uses short momentum plus trend alignment; deliberately conservative.
+  let momentum=(closes.at(-1)-closes.at(-5))/4;
+  let trend=(e9-e21)*0.35;
+  let forecast=price+(momentum*4)+trend;
+  if(dir==="WAIT")forecast=price;
+  $("forecast").textContent="$"+fmt(forecast);
+  let confidence=Math.min(92,52+Math.abs(score)*12);
+  $("confidence").textContent=dir==="WAIT"?"🟡 Señales mezcladas — no apostar":"Confianza estimada: "+confidence+"%";
+  const el=$("signal");
+  el.className="signal "+(dir==="UP"?"up":dir==="DOWN"?"down":"wait");
+  el.textContent=dir==="UP"?"🟢 UP":dir==="DOWN"?"🔴 DOWN":"🟡 NO APOSTAR";
+  previousPrediction=dir==="WAIT"?null:dir;
+}
+function updateTimer(){
+  const now=Date.now(), end=lastCandleOpen+15*60*1000;
+  let sec=Math.max(0,Math.floor((end-now)/1000));
+  $("timer").textContent=String(Math.floor(sec/60)).padStart(2,"0")+":"+String(sec%60).padStart(2,"0");
+  const mins=sec/60;
+  $("candle").textContent=mins<=2?"⏳ Últimos 2 min":mins<=5?"⚠️ Últimos 5 min":"En curso";
+  if(sec===0)load();
+}
+async function load(){
+ try{
+  const r=await fetch(API+"?symbol="+SYMBOL+"&interval="+INTERVAL+"&limit="+LIMIT,{cache:"no-store"});
+  if(!r.ok)throw new Error("API");
+  candles=await r.json();
+  const c=candles.at(-1); lastCandleOpen=+c[0];
+  $("price").textContent="$"+fmt(+c[4]);
+  $("open").textContent="$"+fmt(+c[1]);
+  $("hl").textContent="$"+fmt(+c[2])+" / $"+fmt(+c[3]);
+  if(previousPrediction){
+    const oldClose=+c[1];
+    // If a new candle has appeared, compare previous signal to previous candle direction.
+    if(lastCandleOpen>window._prevOpen){
+      const old = candles.at(-2), oldDir=+old[4]>=+old[1]?"UP":"DOWN";
+      total++; if(previousPrediction===oldDir)wins++;
+      $("result").textContent=(previousPrediction===oldDir?"✅ ACERTÓ ":"❌ FALLÓ ")+oldDir;
+      $("stats").textContent=wins+" / "+total;
+    }
+  }
+  window._prevOpen=lastCandleOpen;
+  signal();
+  $("status").textContent="Actualizado: "+new Date().toLocaleTimeString();
+ }catch(e){$("status").textContent="No se pudo conectar. Revisa tu internet."}
+}
+$("refresh").onclick=load;
+load(); setInterval(updateTimer,1000); setInterval(load,15000);
+</script>
+</body>
+</html>
